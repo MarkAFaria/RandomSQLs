@@ -1,0 +1,1021 @@
+--Use this to change the schema so you don't have to do it in every single table call.
+ALTER SESSION SET current_schema = SYSADM; 
+
+
+WITH 
+    /*Define snapshot term*/
+CTE_ADMIT_TERM (ADMIT_TERM) AS (
+    SELECT 2248 ADMIT_TERM FROM DUAL 
+    UNION ALL SELECT 2251 admit_term FROM DUAL
+    /*DUAL is a default one row, one column table in every Oracle database*/
+    ),
+
+--- Admissions Decision Status descriptions.  
+--- Instead of a cumbersome set of CASE statements, I "build" a table this way and join it in, much as if it were a _TBL table in CS.
+TBL_DECISION_STATUS (PROG_STATUS, PROG_STATUS_DESC, PROG_ACTION, PROG_ACTION_DESC, PROG_REASON, PROG_REASON_DESC, DECISION_STATUS_CD, DECISION_STATUS) AS (
+    SELECT 'AD', 'Admitted', 'ADMT', 'Admit', 'DCAC', 'Admit', 'AC', 'Accept' FROM DUAL UNION ALL
+    SELECT 'AP', 'Admitted', 'DDEF', 'Defer Decision', 'APEX', 'Early Decision Defer', 'EX', 'Dom,no English' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'DENY', 'Deny', 'DCGT', 'Guaranteed Transfer', 'GR', 'Reject, GT' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'COND', 'Conditional Admit', 'DCIA', 'International No Fin/English', 'IA', 'Intl-no Eng/fin' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'COND', 'Conditional Admit', 'DCIE', 'Needs English', 'IE', 'Needs English' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'COND', 'Conditional Admit', 'DCIM', 'International without Fin', 'IM', 'Intl w/o fin' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'ADMT', 'Admit', 'DCJA', 'January Admit', 'JA', 'January Admit' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'COND', 'Conditional Admit', 'DCJC', 'CELOP Bridge Program', 'JC', 'CELOP January' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'DENY', 'Deny', 'DCJC', 'CELOP Bridge Program', 'JC', 'Jan CELOP Deny' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'ADRV', 'Admission Revocation', 'DCRS', 'Offer Rescinded', 'RJ', 'Reject' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'DENY', 'Deny', 'DCGR', 'Deny After Guaranteed Transfer', 'GR', 'Reject, GT' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'DENY', 'Deny', 'DCRJ', 'Regular Deny', 'RJ', 'Reject' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'DENY', 'Deny', 'DCRN', 'Deny Incomplete', 'RN', 'Reject Incomplt' FROM DUAL UNION ALL
+    SELECT 'WT', 'Waitlisted', 'WAIT', 'Waitlist', 'DCWT', 'Waitlist', 'WL', 'Waitlist' FROM DUAL UNION ALL
+    SELECT 'WT', 'Waitlisted', 'WAOF', 'Waitlist Offer', 'DCWL', 'Regular Waitlist', 'WL', 'Waitlist' FROM DUAL UNION ALL
+    SELECT 'CN', 'Cancelled', 'WADM', 'Administrative Withdrawal', 'DCEW', 'Early Decision Withdrawal', 'WT', 'Withdrawn' FROM DUAL UNION ALL
+    SELECT 'AD', 'Admitted', 'ADMT', 'Admit', 'DCKH', 'KHC Admit', 'AC', 'Accept' FROM DUAL),
+    
+    
+TBL_RESPONSE_STATUS (PROG_STATUS,  PROG_ACTION, PROG_REASON, RESPONSE_STATUS_CD, RESPONSE_STATUS) AS (
+    SELECT 'CN', 'WAPP', 'RPAD', 'AD', 'Decline' FROM DUAL UNION ALL
+    SELECT 'CN', 'WAPP', 'RPDW', 'AD', 'Decline' FROM DUAL UNION ALL
+    SELECT 'CN', 'WADM', 'RPDF', 'DF', 'Defer' FROM DUAL UNION ALL
+    SELECT '**', 'DATA', 'RPGA', 'GA', 'GT Accept' FROM DUAL UNION ALL
+    SELECT '**', 'DATA', 'RPGD', 'GD', 'GT Decline' FROM DUAL UNION ALL
+    SELECT 'PM', 'DEIN', 'RPPD', 'PD', 'Paid Deposit' FROM DUAL UNION ALL
+    SELECT 'PM', 'DEIN', 'RPWP', 'PD', 'Paid Deposit' FROM DUAL UNION ALL
+    SELECT 'AC', 'MATR', 'MATR', 'PD', 'Paid Deposit' FROM DUAL UNION ALL
+    SELECT '**', 'DATA', 'RPWA', 'WA', 'Waitlist Accept' FROM DUAL UNION ALL
+    SELECT '**', 'DATA', 'RPWD', 'WD', 'Waitlist Decline' FROM DUAL UNION ALL
+    SELECT '**', 'DATA', 'RPWE', 'WE', 'Waitlist Ext' FROM DUAL),
+
+--- The backbone of the megaquery.  Snags all application records and relevant data.
+--- Ultimately, the actual query which calls this calls it twice-- once to get information from the original application
+--- and once to get the most recent.  It might be more efficient to create two versions of this tailored to each, perhaps.
+CTE_APPLICATION_RECORDS (   SOURCE_TABLE, EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, EFFDT, EFFSEQ, INSTITUTION, 
+                            ACAD_PROG, PROG_STATUS, PROG_ACTION, PROG_REASON, DECISION_STATUS, RESPONSE_STATUS, ADMIT_TERM, ACTION_DT, ACAD_PLAN, ACAD_PLAN_TYPE, DEGREE, PLAN_SEQUENCE,
+                            ACAD_SUB_PLAN, ACAD_GROUP /*, MAJOR */) AS (
+    SELECT  'APPLICATION' SOURCE_TABLE,
+            PRG.EMPLID,
+            PRG.ACAD_CAREER,
+            PRG.STDNT_CAR_NBR,
+            PRG.ADM_APPL_NBR,
+            PRG.APPL_PROG_NBR,
+            PRG.EFFDT,
+            PRG.EFFSEQ,
+            PRG.INSTITUTION,
+            PRG.ACAD_PROG,
+            PRG.PROG_STATUS,
+            PRG.PROG_ACTION,
+            PRG.PROG_REASON,
+            DST.DECISION_STATUS_CD,
+            RST.RESPONSE_STATUS_CD,
+            PRG.ADMIT_TERM,
+            PRG.ACTION_DT,
+            PLN.ACAD_PLAN,
+            PLT.ACAD_PLAN_TYPE,
+            PLT.DEGREE,
+            PLN.PLAN_SEQUENCE,
+            SPL.ACAD_SUB_PLAN,
+            PGT.ACAD_GROUP
+            --CASE WHEN PGT.ACAD_GROUP IN ('QST', 'SHA') THEN TRIM(SPT.DESCR) || ' ' ELSE '' END || TRIM(PLT.DESCR) PLAN
+    FROM    PS_ADM_APPL_PROG PRG
+    LEFT
+    JOIN    PS_ADM_APPL_PLAN PLN
+    ON      PRG.EMPLID = PLN.EMPLID
+    AND     PRG.ACAD_CAREER = PLN.ACAD_CAREER
+    AND     PRG.STDNT_CAR_NBR = PLN.STDNT_CAR_NBR
+    AND     PRG.APPL_PROG_NBR = PLN.APPL_PROG_NBR
+    AND     PRG.EFFDT = PLN.EFFDT
+    AND     PRG.EFFSEQ = PLN.EFFSEQ
+    AND     PLN.PLAN_SEQUENCE = 1
+    LEFT
+    JOIN    PS_ADM_APPL_SBPLAN SPL
+    ON      PLN.EMPLID = SPL.EMPLID
+    AND     PLN.ACAD_CAREER = SPL.ACAD_CAREER
+    AND     PLN.STDNT_CAR_NBR = SPL.STDNT_CAR_NBR
+    AND     PLN.ADM_APPL_NBR = SPL.ADM_APPL_NBR
+    AND     PLN.APPL_PROG_NBR = SPL.APPL_PROG_NBR
+    AND     PLN.ACAD_PLAN = SPL.ACAD_PLAN
+    AND     PLN.EFFDT = SPL.EFFDT
+    AND     PLN.EFFSEQ = SPL.EFFSEQ
+    /****** LOOKUPS *******/
+    LEFT
+    JOIN    PS_ACAD_PROG_TBL PGT
+    ON      PRG.INSTITUTION = PGT.INSTITUTION
+    AND     PRG.ACAD_PROG = PGT.ACAD_PROG
+    AND     PRG.ACAD_CAREER = PGT.ACAD_CAREER
+    AND     PGT.EFFDT = (   
+            SELECT  MAX(PGB.EFFDT) 
+            FROM    PS_ACAD_PROG_TBL PGB
+            WHERE   PGT.INSTITUTION = PGB.INSTITUTION
+            AND     PGT.ACAD_PROG = PGB.ACAD_PROG
+            AND     PGT.EFFDT <= PRG.EFFDT
+            AND     PGB.EFFDT <= PRG.EFFDT)
+    LEFT
+    JOIN    PS_ACAD_PLAN_TBL PLT
+    ON      PRG.INSTITUTION = PLT.INSTITUTION
+    AND     PLN.ACAD_PLAN = PLT.ACAD_PLAN
+    AND     PLT.EFFDT = (   
+            SELECT  MAX(PLB.EFFDT) 
+            FROM    PS_ACAD_PLAN_TBL PLB
+            WHERE   PLT.INSTITUTION = PLB.INSTITUTION
+            AND     PLT.ACAD_PLAN = PLB.ACAD_PLAN
+            AND     PLT.EFFDT <= PRG.EFFDT
+            AND     PLB.EFFDT <= PRG.EFFDT)
+/*
+    LEFT
+    JOIN    PS_ACAD_SUBPLN_TBL SPT
+    ON      PRG.INSTITUTION = SPT.INSTITUTION
+    AND     SPL.ACAD_PLAN = SPT.ACAD_PLAN
+    AND     SPL.ACAD_SUB_PLAN = SPT.ACAD_SUB_PLAN
+    AND     SPT.EFFDT = (   
+            SELECT  MAX(SPB.EFFDT) 
+            FROM    PS_ACAD_SUBPLN_TBL SPB
+            WHERE   SPT.INSTITUTION = SPB.INSTITUTION
+            AND     SPT.ACAD_PLAN = SPB.ACAD_PLAN
+            AND     SPT.ACAD_SUB_PLAN = SPB.ACAD_SUB_PLAN
+            AND     SPT.EFFDT <= PRG.EFFDT)*/
+    LEFT
+    JOIN    TBL_DECISION_STATUS DST
+    ON      PRG.PROG_STATUS = DST.PROG_STATUS
+    AND     PRG.PROG_ACTION = DST.PROG_ACTION
+    AND     PRG.PROG_REASON = DST.PROG_REASON
+    LEFT
+    JOIN    TBL_RESPONSE_STATUS RST
+    ON      PRG.PROG_ACTION = RST.PROG_ACTION
+    AND     PRG.PROG_REASON = RST.PROG_REASON
+
+    /****** TERM OF INTEREST ******/
+    INNER
+    JOIN    CTE_ADMIT_TERM TRM
+    ON      PRG.ADMIT_TERM = TRM.ADMIT_TERM
+    WHERE   PRG.ACAD_CAREER = 'UGRD'
+   AND     (PLT.ACAD_PLAN_TYPE = 'MAJ' OR PLT.ACAD_PLAN_TYPE = 'HON')
+    ),
+    
+CTE_MATRICULATION_RECORDS ( SOURCE_TABLE, EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, EFFDT, EFFSEQ, INSTITUTION, 
+                            ACAD_PROG, PROG_STATUS, PROG_ACTION, PROG_REASON, DECISION_STATUS, RESPONSE_STATUS, ADMIT_TERM, ACTION_DT, ACAD_PLAN, ACAD_PLAN_TYPE, DEGREE, PLAN_SEQUENCE,
+                            ACAD_SUB_PLAN, ACAD_GROUP/*, MAJOR*/ ) AS (
+    SELECT  'ENROLLMENT' SOURCE_TABLE,
+            PRG.EMPLID,
+            PRG.ACAD_CAREER,
+            PRG.STDNT_CAR_NBR,
+            PRG.ADM_APPL_NBR,
+            PRG.APPL_PROG_NBR,
+            PRG.EFFDT,
+            PRG.EFFSEQ,
+            PRG.INSTITUTION,
+            PRG.ACAD_PROG,
+            PRG.PROG_STATUS,
+            PRG.PROG_ACTION,
+            PRG.PROG_REASON,
+            DST.DECISION_STATUS_CD,
+            RST.RESPONSE_STATUS_CD,
+            PRG.ADMIT_TERM,
+            PRG.ACTION_DT,
+            PLN.ACAD_PLAN,
+            PLT.ACAD_PLAN_TYPE,
+            PLT.DEGREE,
+            PLN.PLAN_SEQUENCE,
+            SPL.ACAD_SUB_PLAN,
+            PGT.ACAD_GROUP
+            --CASE WHEN PGT.ACAD_GROUP IN ('QST', 'SHA') THEN TRIM(SPT.DESCR) || ' ' ELSE '' END || TRIM(PLT.DESCR) MAJOR
+    FROM    PS_ACAD_PROG PRG
+    LEFT
+    JOIN    PS_ACAD_PLAN PLN
+    ON      PRG.EMPLID = PLN.EMPLID
+    AND     PRG.ACAD_CAREER = PLN.ACAD_CAREER
+    AND     PRG.STDNT_CAR_NBR = PLN.STDNT_CAR_NBR
+    AND     PRG.EFFDT = PLN.EFFDT
+    AND     PRG.EFFSEQ = PLN.EFFSEQ
+    AND     PLN.PLAN_SEQUENCE = 1
+    LEFT
+    JOIN    PS_ACAD_SUBPLAN SPL
+    ON      PLN.EMPLID = SPL.EMPLID
+    AND     PLN.ACAD_CAREER = SPL.ACAD_CAREER
+    AND     PLN.STDNT_CAR_NBR = SPL.STDNT_CAR_NBR
+    AND     PLN.ACAD_PLAN = SPL.ACAD_PLAN
+    AND     PLN.EFFDT = SPL.EFFDT
+    AND     PLN.EFFSEQ = SPL.EFFSEQ
+    /****** LOOKUPS *******/
+    LEFT
+    JOIN    PS_ACAD_PROG_TBL PGT
+    ON      PRG.INSTITUTION = PGT.INSTITUTION
+    AND     PRG.ACAD_PROG = PGT.ACAD_PROG
+    AND     PRG.ACAD_CAREER = PGT.ACAD_CAREER
+    AND     PGT.EFFDT = (   
+            SELECT  MAX(PGB.EFFDT) 
+            FROM    PS_ACAD_PROG_TBL PGB
+            WHERE   PGT.INSTITUTION = PGB.INSTITUTION
+            AND     PGT.ACAD_PROG = PGB.ACAD_PROG
+            AND     PGT.EFFDT <= PRG.EFFDT
+            AND     PGB.EFFDT <= PRG.EFFDT)
+    LEFT
+    JOIN    PS_ACAD_PLAN_TBL PLT
+    ON      PRG.INSTITUTION = PLT.INSTITUTION
+    AND     PLN.ACAD_PLAN = PLT.ACAD_PLAN
+    AND     PLT.EFFDT = (   
+            SELECT  MAX(PLB.EFFDT) 
+            FROM    PS_ACAD_PLAN_TBL PLB
+            WHERE   PLT.INSTITUTION = PLB.INSTITUTION
+            AND     PLT.ACAD_PLAN = PLB.ACAD_PLAN
+            AND     PLT.EFFDT <= PRG.EFFDT
+            AND     PLB.EFFDT <= PRG.EFFDT)
+
+ /*   LEFT
+    JOIN    PS_ACAD_SUBPLN_TBL SPT
+    ON      PRG.INSTITUTION = SPT.INSTITUTION
+    AND     SPL.ACAD_PLAN = SPT.ACAD_PLAN
+    AND     SPL.ACAD_SUB_PLAN = SPT.ACAD_SUB_PLAN
+    AND     SPT.EFFDT = (   
+            SELECT  MAX(SPB.EFFDT) 
+            FROM    PS_ACAD_SUBPLN_TBL SPB
+            WHERE   SPT.INSTITUTION = SPB.INSTITUTION
+            AND     SPT.ACAD_PLAN = SPB.ACAD_PLAN
+            AND     SPT.ACAD_SUB_PLAN = SPB.ACAD_SUB_PLAN
+            AND     SPT.EFFDT <= PRG.EFFDT)*/
+    LEFT
+    JOIN    TBL_DECISION_STATUS DST
+    ON      PRG.PROG_STATUS = DST.PROG_STATUS
+    AND     PRG.PROG_ACTION = DST.PROG_ACTION
+    AND     PRG.PROG_REASON = DST.PROG_REASON
+    LEFT
+    JOIN    TBL_RESPONSE_STATUS RST
+    ON      PRG.PROG_ACTION = RST.PROG_ACTION
+    AND     PRG.PROG_REASON = RST.PROG_REASON
+
+    /****** TERM OF INTEREST ******/
+    INNER
+    JOIN    CTE_ADMIT_TERM TRM
+    ON      PRG.ADMIT_TERM = TRM.ADMIT_TERM
+    WHERE   PRG.ACAD_CAREER = 'UGRD'
+    AND     (PLT.ACAD_PLAN_TYPE = 'MAJ' OR PLT.ACAD_PLAN_TYPE = 'HON')
+    AND     PRG.DATA_FROM_ADM_APPL = 'Y'),
+
+CTE_STUDENT_RECORDS_DEDUPLICATED (EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, EFFDT, EFFSEQ, INSTITUTION, 
+                    ACAD_PROG, PROG_STATUS, PROG_ACTION, PROG_REASON, 
+                    DECISION_STATUS, RESPONSE_STATUS, 
+                    ADMIT_TERM, ACTION_DT, 
+                    ACAD_PLAN, DEGREE, PLAN_SEQUENCE, ACAD_SUB_PLAN, ACAD_GROUP) AS (
+    SELECT DISTINCT EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, EFFDT, EFFSEQ, INSTITUTION, 
+                    ACAD_PROG, PROG_STATUS, PROG_ACTION, PROG_REASON, 
+                    DECISION_STATUS, RESPONSE_STATUS, 
+                    ADMIT_TERM, ACTION_DT, 
+                    ACAD_PLAN, DEGREE, PLAN_SEQUENCE, ACAD_SUB_PLAN, ACAD_GROUP
+    FROM    (
+            SELECT  *
+            FROM    CTE_APPLICATION_RECORDS 
+            UNION
+            SELECT  *
+            FROM    CTE_MATRICULATION_RECORDS
+            ) REC
+),
+
+
+CTE_STUDENT_RECORDS ( EMPLID, INSTITUTION, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, ADMIT_TERM,
+                            DECISION_STATUS, DECISION_STATUS_DATE, EVER_WAITLISTED, LATEST_CONDITIONAL_STATUS,
+                            KHC_ADMIT,
+                            RESPONSE_STATUS, RESPONSE_STATUS_DATE, KHC_RESPONSE,
+                            DEPOSIT_DATE,
+                            COLLEGE_APPLIED, PLAN_APPLIED, SUBPLAN_APPLIED, DEGREE_APPLIED,
+                            COLLEGE_LATEST,  PLAN_LATEST,  SUBPLAN_LATEST,  DEGREE_LATEST ) AS (
+SELECT  EMPLID, INSTITUTION, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, ADMIT_TERM, 
+        MAX(CASE WHEN LATEST_DECISION = 1 THEN DECISION_STATUS ELSE NULL END) DECISION_STATUS,
+        TO_CHAR(MAX(CASE WHEN LATEST_DECISION = 1 THEN EFFDT ELSE NULL END),'YYYYMMDD') DECISION_STATUS_DATE,
+        MAX(CASE WHEN LATEST_WAITLIST = 1 THEN 1 ELSE 0 END) EVER_WAITLISTED,
+        MAX(CASE WHEN LATEST_CONDITIONAL = 1 THEN DECISION_STATUS ELSE NULL END) LATEST_CONDITIONAL_STATUS,
+        MAX(CASE WHEN LATEST_DECISION = 1 AND PROG_ACTION = 'ADMT' AND PROG_REASON = 'DCKH' THEN 1 ELSE 0 END) KHC_ADMIT,
+        MAX(CASE WHEN LATEST_RESPONSE = 1 THEN RESPONSE_STATUS ELSE NULL END) RESPONSE_STATUS,
+        TO_CHAR(MAX(CASE WHEN LATEST_RESPONSE = 1 THEN EFFDT ELSE NULL END),'YYYYMMDD') RESPONSE_STATUS_DATE,
+        MAX(CASE WHEN LATEST_KHC_RESPONSE = 1 AND ACAD_PLAN_TYPE = 'HON' THEN 'AC'
+                 WHEN LATEST_KHC_RESPONSE = 1 AND PROG_REASON = 'RPKD' THEN 'DE' ELSE NULL END) KHC_RESPONSE,
+        TO_CHAR(MAX(CASE WHEN LATEST_DEPOSIT_RECORD = 1 THEN EFFDT ELSE NULL END),'YYYYMMDD')  DEPOSIT_DATE,
+        MAX(CASE WHEN LATEST_INITIAL_APPLICATION = 1 THEN ACAD_GROUP ELSE NULL END) COLLEGE_APPLIED,
+        MAX(CASE WHEN LATEST_INITIAL_APPLICATION = 1 THEN ACAD_PLAN ELSE NULL END) PLAN_APPLIED,
+        MAX(CASE WHEN LATEST_INITIAL_APPLICATION = 1 THEN ACAD_SUB_PLAN ELSE NULL END) SUBPLAN_APPLIED,
+        MAX(CASE WHEN LATEST_INITIAL_APPLICATION = 1 THEN DEGREE ELSE NULL END) DEGREE_APPLIED,
+        MAX(CASE WHEN LATEST_MAJOR = 1 THEN ACAD_GROUP ELSE NULL END) COLLEGE_LATEST,
+        MAX(CASE WHEN LATEST_MAJOR = 1 THEN ACAD_PLAN ELSE NULL END) PLAN_LATEST,
+        MAX(CASE WHEN LATEST_MAJOR = 1 THEN ACAD_SUB_PLAN ELSE NULL END) SUBPLAN_LATEST,
+        MAX(CASE WHEN LATEST_MAJOR = 1 THEN DEGREE ELSE NULL END) DEGREE_LATEST
+FROM    (
+        SELECT  REC.*
+                --PLN
+                --SPN.
+        FROM    /*REC*/ (
+                
+                SELECT  -- Creating an indicator for the initial application to use later.
+                        CASE WHEN PROG_REASON = 'APAP' AND SOURCE_TABLE = 'APPLICATION' THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN PROG_REASON = 'APAP' AND SOURCE_TABLE = 'APPLICATION' THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC, PLAN_SEQUENCE) ELSE NULL END
+                        LATEST_INITIAL_APPLICATION,
+                        CASE WHEN PROG_REASON = 'DEIN' AND SOURCE_TABLE = 'APPLICATION' THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN PROG_REASON = 'DEIN' AND SOURCE_TABLE = 'APPLICATION' THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC) ELSE NULL END 
+                        LATEST_DEPOSIT_RECORD,
+                        -- Index for indicator for ever waitlisted
+                        CASE WHEN PROG_STATUS = 'WT' THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN PROG_STATUS = 'WT' THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC) ELSE NULL END 
+                        LATEST_WAITLIST,
+                        -- Index for latest conditional (ever conditional)
+                        CASE WHEN PROG_ACTION = 'COND' THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN PROG_ACTION = 'COND' THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC) ELSE NULL END 
+                        LATEST_CONDITIONAL,
+                        -- Create the index for latest major
+                        ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR ORDER BY EFFDT DESC, EFFSEQ DESC, PLAN_SEQUENCE) 
+                        LATEST_MAJOR,
+                        -- Create the index for latest decision. It only gives a row number to valid decisions statuses. Note that we need the assessment of a valid decision status also in the partition or else it'll 
+                        CASE WHEN DECISION_STATUS IS NOT NULL THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN DECISION_STATUS IS NOT NULL THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC) ELSE NULL END 
+                        LATEST_DECISION,
+                        -- Create the index for latest response. It only gives a row number to valid response statuses. Note that we need the assessment of a valid decision status also in the partition or else it'll 
+                        CASE WHEN RESPONSE_STATUS IS NOT NULL THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN RESPONSE_STATUS IS NOT NULL THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC) ELSE NULL END 
+                        LATEST_RESPONSE,
+                        CASE WHEN ACAD_PLAN_TYPE = 'HON' OR PROG_ACTION = 'RPKD'  THEN ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, CASE WHEN  ACAD_PLAN_TYPE = 'HON' OR PROG_ACTION = 'RPKD' THEN 1 ELSE 0 END ORDER BY EFFDT DESC, EFFSEQ DESC, PLAN_SEQUENCE) ELSE NULL END 
+                        LATEST_KHC_RESPONSE,
+                        UNN.*
+                FROM    /*UNN*/ (
+                        SELECT  *
+                        FROM    CTE_APPLICATION_RECORDS 
+                        UNION
+                        SELECT  *
+                        FROM    CTE_MATRICULATION_RECORDS
+                        ) UNN
+                ) REC
+                --LEFT
+                --JOIN
+                -- PLAN AND SUBPLAN (AND THE tblS)
+    
+        WHERE   LATEST_INITIAL_APPLICATION = 1
+        OR      LATEST_WAITLIST = 1
+        OR      LATEST_CONDITIONAL = 1
+        OR      LATEST_DEPOSIT_RECORD = 1
+        OR      LATEST_MAJOR = 1
+        OR      LATEST_DECISION = 1
+)
+GROUP BY EMPLID, INSTITUTION, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, APPL_PROG_NBR, ADMIT_TERM 
+),
+
+--- Pulling all the info from fields in the CAF table.  
+--- Uses a PIVOT to spin out attribute-value pairs into their own field, rather than a bunch of CASE...WHEN MAX etc.
+--- I use this trick quite a bit in a number of the CTEs.
+--- I also use this ROW_NUMBER() to index the records (usually by EFFDT, though in this table it is the SEQ)
+--- Under this construction, the most recent row gets an index of 1, so we do a WHERE index = 1 at the end to return the latest row.
+--- My understanding is that this usually has similar enough performance to doing the MAX(EFFDT) constructin that, say, the query builder 
+--- favors and is used in the above CTE, but is, in my opinion, a little easire to read.  So I use it extensively in other queries.
+CTE_CAF_FIELDS (
+            EMPLID, ADM_APPL_NBR, STDNT_CAR_NBR, ACAD_CAREER, KHC_INTEREST, CGS_INTEREST, LANDSCAPE_HS, LANDSCAPE_NEIGHBORHOOD, TEST_SCORE_CONSIDERATION, FIRST_GEN) AS (
+    SELECT  EMPLID, ADM_APPL_NBR, STDNT_CAR_NBR, ACAD_CAREER, 
+            CASE    SUBSTR(KHC_INTEREST,1,1)
+                    WHEN 'Y' THEN 1
+                    WHEN 'N' THEN 0
+                    ELSE NULL END KHC_INTERES,
+            CASE    SUBSTR(CGS_INTEREST,1,1)
+                    WHEN 'Y' THEN 1
+                    WHEN 'N' THEN 0
+                    ELSE NULL END CGS_INTEREST, 
+            LANDSCAPE_HS, LANDSCAPE_NEIGHBORHOOD, 
+            CASE    SUBSTR(TEST_SCORE_CONSIDERATION,1,1)
+                    WHEN 'Y' THEN 1
+                    WHEN 'N' THEN 0
+                    ELSE NULL END TEST_SCORE_CONSIDERATION, 
+            CASE    SUBSTR(FIRST_GEN,1,1)
+                    WHEN 'Y' THEN 1
+                    WHEN 'N' THEN 0
+                    ELSE NULL END FIRST_GEN
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY EMPLID, ADM_APPL_NBR, ACAD_CAREER, STDNT_CAR_NBR, SCC_CAF_ATTRIB_NM ORDER BY SCC_CAF_ATTR_SEQ DESC) CAF_INDEX,
+                    EMPLID,
+                    ADM_APPL_NBR,
+                    STDNT_CAR_NBR,
+                    ACAD_CAREER,
+                    SCC_CAF_ATTRIB_NM ATR,
+                    CASE WHEN SCC_CAF_ATTRIB_NM IN ('BU_AD_LD_HSS','BU_AD_LD_NBHS') THEN TO_CHAR(SCC_CAF_ATTR_NVAL) ELSE SCC_CAF_ATTR_VAL END VAL
+            FROM    PS_SAD_APPL_CAF
+            WHERE   SCC_CAF_ATTRIB_NM IN (
+                    'BU_AD_APP_HON_IND',
+                    'BU_AD_APP_CGS_IND',
+                    'BU_AD_LD_HSS',
+                    'BU_AD_LD_NBHS',
+                    'BU_AD_APP_TST_SCR',
+                    'BU_CC_FIRST_GEN') 
+                    )
+            PIVOT   ( 
+                MAX(VAL)
+                FOR ATR
+                IN (
+                    'BU_AD_APP_HON_IND' KHC_INTEREST,
+                    'BU_AD_APP_CGS_IND' CGS_INTEREST,
+                    'BU_AD_LD_HSS' LANDSCAPE_HS,
+                    'BU_AD_LD_NBHS' LANDSCAPE_NEIGHBORHOOD,
+                    'BU_AD_APP_TST_SCR' TEST_SCORE_CONSIDERATION,
+                    'BU_CC_FIRST_GEN' FIRST_GEN
+                )
+            )
+            WHERE CAF_INDEX = 1               
+    ),
+
+--- Scholarships' most recent status. Uses PIVOT trick.
+CTE_SCHOLARSHIPS (
+            EMPLID, ACAD_CAREER, ADMIT_TERM, 
+            SCH_MENINO_STATUS, SCH_HISPNC_STATUS, SCH_NTMER_STATUS, SCH_NRAABS_STATUS, SCH_NRIS_STATUS, SCH_NRSTS_STATUS, SCH_PRES_STATUS, SCH_TRUST_STATUS) AS (
+    SELECT  EMPLID, ACAD_CAREER, ADMIT_TERM,
+            SCH_MENINO_STATUS, SCH_HISPNC_STATUS, SCH_NTMER_STATUS, SCH_NRAABS_STATUS, SCH_NRIS_STATUS, SCH_NRSTS_STATUS, SCH_PRES_STATUS, SCH_TRUST_STATUS
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY SCH.INSTITUTION, SCH.EMPLID, SCH.ACAD_CAREER, SCH.ADMIT_TERM, PKG.REL_ITEM_TYPE ORDER BY SCH.EFFDT DESC, SCH.EFFSEQ DESC) PKG_INDEX,
+                    SCH.EMPLID, 
+                    SCH.INSTITUTION,
+                    SCH.ACAD_CAREER, 
+                    SCH.ADMIT_TERM, 
+                    SCH.EFFDT, 
+                    SCH.EFFSEQ, 
+                    PKG.REL_ITEM_TYPE SCHOLARSHIP_NAME,
+                    SCH.BU_SCHLR_STATUS SCH_STATUS_CD,
+                    STS.DESCR SCH_STATUS
+            FROM    PS_BU_FA_SCHLR_DTL SCH
+            LEFT 
+            JOIN    PS_PKG_REL_ITM_TYP PKG
+            ON      PKG.INSTITUTION = SCH.INSTITUTION
+            AND     PKG.AID_YEAR = SCH.AID_YEAR
+            AND     PKG.ACAD_CAREER = SCH.ACAD_CAREER
+            AND     PKG.ITEM_TYPE = SCH.BU_SCHL_TYPE
+            LEFT
+            JOIN    PS_BU_FA_SCHLR_STS STS
+            ON      STS.BU_SCHLR_STATUS = SCH.BU_SCHLR_STATUS
+            WHERE   PKG.REL_ITEM_TYPE IN ('MENINO', 'UAHISPNC', 'UANTMER', 'NRAABS', 'NRIS', 'NRSTS', 'PRES', 'UATRUST')
+            )
+        PIVOT   ( 
+                MAX(SCH_STATUS)
+                FOR SCHOLARSHIP_NAME
+                IN (
+                    'MENINO'    SCH_MENINO_STATUS, 
+                    'UAHISPNC'  SCH_HISPNC_STATUS, 
+                    'UANTMER'   SCH_NTMER_STATUS, 
+                    'NRAABS'    SCH_NRAABS_STATUS, 
+                    'NRIS'      SCH_NRIS_STATUS, 
+                    'NRSTS'     SCH_NRSTS_STATUS, 
+                    'PRES'      SCH_PRES_STATUS, 
+                    'UATRUST'   SCH_TRUST_STATUS
+                    )
+                )
+    WHERE   PKG_INDEX = 1
+),
+
+--- Test scores. Uses PIVOT trick. Check calculation for ACT_Highest (average of math, reading, english)
+--- Have not included various specific subject scores, or AP scores
+--- but would be an easy matter to do so-- just need to determine which ones.
+CTE_TEST_SCORES (
+            EMPLID, 
+            TS_ACT_ENGLISH, TS_ACT_MATH, TS_ACT_READING, TS_ACT_SCIENCE, TS_ACT_HIGHEST,
+            TS_DUO_COMP, TS_DUO_CONV, TS_DUO_LIT, TS_DUO_PROD, TS_DUO_OVERALL,
+            TS_IELTS,
+            TS_SAT_MATH, TS_SAT_VERBAL,
+            TS_TOEFL
+                ) AS (
+    SELECT  EMPLID, 
+            TS_ACT_ENGLISH, TS_ACT_MATH, TS_ACT_READING, TS_ACT_SCIENCE,
+            CASE    WHEN    TS_ACT_MATH IS NULL 
+                    AND     TS_ACT_READING IS NULL
+                    AND     TS_ACT_SCIENCE IS NULL
+                    THEN    NULL
+                    ELSE    (
+                            COALESCE(TS_ACT_ENGLISH, 0) + 
+                            COALESCE(TS_ACT_MATH, 0) +
+                            COALESCE(TS_ACT_READING, 0) 
+                            ) / (
+                            COALESCE(SIGN(TS_ACT_ENGLISH), 0) + 
+                            COALESCE(SIGN(TS_ACT_MATH), 0) +
+                            COALESCE(SIGN(TS_ACT_READING), 0)
+                            )
+                    END 
+            TS_ACT_HIGHEST,
+            TS_DUO_COMP, TS_DUO_CONV, TS_DUO_LIT, TS_DUO_PROD, TS_DUO_OVERALL,
+            TS_IELTS,
+            TS_SAT_MATH, TS_SAT_VERBAL,
+            TS_TOEFL
+    FROM    (
+            SELECT  EMPLID, 
+                    TEST_ID||'.'||TEST_COMPONENT TS_KEY,
+                    SCORE
+            FROM    PS_STDNT_TEST_COMP
+            WHERE   TEST_ID IN ('ACT', 'DUOLINGO', 'IELTS', 'SAT I', 'TOEFL')  
+            )
+    PIVOT   (
+            MAX(SCORE)
+            FOR TS_KEY
+            IN  (
+            'ACT.ENGL'      TS_ACT_ENGLISH,
+            'ACT.MATH'      TS_ACT_MATH,
+            'ACT.READ'      TS_ACT_READING,
+            'ACT.SCIRE'     TS_ACT_SCIENCE,
+            'DUOLINGO.DCMP' TS_DUO_COMP,
+            'DUOLINGO.DCNV' TS_DUO_CONV,
+            'DUOLINGO.LIT'  TS_DUO_LIT,
+            'DUOLINGO.DPRD' TS_DUO_PROD,
+            'DUOLINGO.OVRLL'TS_DUO_OVERALL,
+            'IELTS.OVRLL'   TS_IELTS,
+            'SAT I.MSS'     TS_SAT_MATH,
+            'SAT I.ERWS'    TS_SAT_VERBAL,
+            'TOEFL.OVRLL'   TS_TOEFL
+            )
+            )
+        ),
+        
+--- Audition (performance) ratings. 
+CTE_AUDITION (EMPLID, EVAL_INSTRUMENT, EVAL_PERFORMANCE_SCORE) AS (
+    SELECT  AUD.EMPLID, 
+            INS.DESCR EVAL_INSTRUMENT,
+            AUD.SCORE_LETTER EVAL_PERFORMANCE_SCORE
+            
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY EMPLID ORDER BY TEST_DT DESC) DATE_INDEX,
+            EMPLID,
+            SCORE_LETTER,
+            TEST_COMPONENT
+            FROM    PS_STDNT_TEST_COMP
+            WHERE   TEST_ID = 'AUDI'
+            ) AUD
+    LEFT
+    JOIN    PS_SA_TCMP_REL_TBL INS
+    ON      INS.TEST_COMPONENT = AUD.TEST_COMPONENT
+    WHERE   AUD.DATE_INDEX = 1
+    ),
+
+--- Relationships.  Sets up 1/0 indicators.
+CTE_RELATIONSHIPS (EMPLID, ALUM_GRANDPARENT, ALUM_OTHER, ALUM_PARENT, ALUM_SIBLING) AS (
+    SELECT  EMPLID, 
+            COALESCE(ALUM_GRANDPARENT,0) ALUM_GRANDPARENT,
+            COALESCE(ALUM_OTHER,0) ALUM_OTHER, 
+            COALESCE(ALUM_PARENT,0) ALUM_PARENT, 
+            COALESCE(ALUM_SIBLING,0) ALUM_SIBLING
+    FROM    (
+            SELECT  RLN.EMPLID,
+                    CASE RLN.PEOPLE_RELATION
+                        WHEN 'GP' THEN 'ALUM_GRANDPARENT'
+                        WHEN 'O'  THEN 'ALUM_OTHER'
+                        WHEN 'G'  THEN 'ALUM_OTHER'
+                        WHEN 'SP' THEN 'ALUM_OTHER'
+                        WHEN 'FA' THEN 'ALUM_PARENT'
+                        WHEN 'M'  THEN 'ALUM_PARENT'
+                        WHEN 'SF' THEN 'ALUM_PARENT'
+                        WHEN 'SM' THEN 'ALUM_PARENT'
+                        WHEN 'SB' THEN 'ALUM_SIBLING'
+                        END ALUM,
+                    1 CT
+            FROM    PS_RELATIONSHIPS RLN, PS_RELATION_AFFIL RAF 
+            WHERE   RAF.EMPLID = RLN.EMPLID
+            AND     RAF.RELATIONSHIP_NBR = RLN.RELATIONSHIP_NBR
+            AND     RAF.INST_AFFILIATION = 'ALUM'
+            AND     RLN.PEOPLE_RELATION IN ('GP', 'O', 'G', 'SP', 'FA', 'M', 'SF', 'SM', 'SB')
+            )
+    PIVOT   (MAX(CT) FOR ALUM IN (
+            'ALUM_GRANDPARENT'  ALUM_GRANDPARENT,
+            'ALUM_OTHER'        ALUM_OTHER,
+            'ALUM_PARENT'       ALUM_PARENT,
+            'ALUM_SIBLING'      ALUM_SIBLING
+            )
+            )
+    ),
+    
+--- You know, on second thought, maybe PIVOTs aren't always so great.
+--- When you need a simple indicator off of a field, this kinda does the trick nicely.
+--- I don't know, what do we think?
+CTE_RELATIONSHIPS2 (EMPLID, ALUM_GRANDPARENT, ALUM_OTHER, ALUM_PARENT, ALUM_SIBLING) AS (
+    SELECT  RLN.EMPLID,
+            SIGN(SUM(CASE WHEN RLN.PEOPLE_RELATION IN ('GP')                    THEN 1 ELSE 0 END)) ALUM_GRANDPARENT,
+            SIGN(SUM(CASE WHEN RLN.PEOPLE_RELATION IN ('G', 'O', 'SP')          THEN 1 ELSE 0 END)) ALUM_OTHER,
+            SIGN(SUM(CASE WHEN RLN.PEOPLE_RELATION IN ('FA', 'M', 'SF', 'SM')   THEN 1 ELSE 0 END)) ALUM_PARENT,
+            SIGN(SUM(CASE WHEN RLN.PEOPLE_RELATION IN ('SB')                    THEN 1 ELSE 0 END)) ALUM_SIBLING
+    FROM    PS_RELATIONSHIPS RLN, PS_RELATION_AFFIL RAF 
+    WHERE   RAF.EMPLID = RLN.EMPLID
+    AND     RAF.RELATIONSHIP_NBR = RLN.RELATIONSHIP_NBR
+    AND     RAF.INST_AFFILIATION = 'ALUM'
+    AND     RLN.PEOPLE_RELATION IN ('GP', 'O', 'G', 'SP', 'FA', 'M', 'SF', 'SM', 'SB')
+    GROUP
+    BY      RLN.EMPLID
+    ),
+   
+
+CTE_RACE_ETH (
+            EMPLID, RE_HISPANIC, RE_WHITE, RE_BLACK, RE_ASIAN, RE_AIAN, RE_NHPI, RE_MISSING, RE_TWO_OR_MORE) AS (
+    SELECT  EMPLID, MAX(HISPANIC), MAX(WHITE), MAX(BLACK), MAX(ASIAN), MAX(AMINDN_ALSKNAT), MAX(NATHAW_PACISL), MAX(RE_MISSING), 
+            CASE    WHEN MAX(HISPANIC) = 1 THEN 0
+                    ELSE CASE   COUNT(EMPLID)
+                                WHEN 0 THEN 0
+                                WHEN 1 THEN 0
+                                ELSE 1 
+                                END END TWO_OR_MORE 
+    FROM    (
+            SELECT  DVE.EMPLID,
+                    CASE WHEN EGT.ETHNIC_GROUP = '3' THEN 1 ELSE 0 END AS HISPANIC,
+                    CASE WHEN EGT.ETHNIC_GROUP = '1' THEN 1 ELSE 0 END AS WHITE,
+                    CASE WHEN EGT.ETHNIC_GROUP = '2' THEN 1 ELSE 0 END AS BLACK,
+                    CASE WHEN EGT.ETHNIC_GROUP = '4' THEN 1 ELSE 0 END AS ASIAN,
+                    CASE WHEN EGT.ETHNIC_GROUP = '5' THEN 1 ELSE 0 END AS AMINDN_ALSKNAT,
+                    CASE WHEN EGT.ETHNIC_GROUP = '7' THEN 1 ELSE 0 END AS NATHAW_PACISL,
+                    CASE WHEN EGT.ETHNIC_GROUP = '6' THEN 1 ELSE 0 END AS RE_MISSING
+            FROM    PS_DIVERS_ETHNIC DVE, PS_ETHNIC_GRP_TBL EGT
+            WHERE   DVE.ETHNIC_GRP_CD = EGT.ETHNIC_GRP_CD
+            )
+    GROUP
+    BY      EMPLID
+            
+    ),
+
+    
+CTE_CITIZENSHIP (EMPLID, CTZ_COUNTRY_OF_CITIZENSHIP, CTZ_US_CITIZEN, CTZ_INTL, CTZ_PERMANENT_RESIDENT, CTZ_REFUGEE, CTZ_OTHER_US_STATUS, CTZ_DOMESTIC) AS (
+SELECT  EMPLID,
+        SUBSTR(MIN(CTZ_COUNTRY),2,3) CTZ_COUNTRY_OF_CITIZENSHIP,
+        MAX(CTZ_US_CITIZEN) CTZ_US_CITIZEN,
+        MAX(CTZ_INTL) CTZ_INTL,
+        MAX(CTZ_PERMANENT_RESIDENT) CTZ_PERMANENT_RESIDENT,
+        MAX(CTZ_REFUGEE) CTZ_REFUGEE,
+        MAX(CTZ_US_OTHER_STATUS) CTZ_US_OTHER_STATUS,
+        MAX(CTZ_DOMESTIC) CTZ_DOMESTIC
+FROM    (
+        SELECT  EMPLID,
+                CASE    WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS IN ('1','2')THEN '0USA'
+                        WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS NOT IN ('1', '2') THEN NULL 
+                        ELSE '1' || COUNTRY END CTZ_COUNTRY,
+                CASE WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS IN ('1','2') THEN 1 ELSE 0 END CTZ_US_CITIZEN,
+                CASE WHEN COUNTRY <> 'USA' AND CITIZENSHIP_STATUS = '1' THEN 1 ELSE 0 END CTZ_INTL,
+                CASE WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS = '5' THEN 1 ELSE 0 END CTZ_PERMANENT_RESIDENT,
+                CASE WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS = '9' THEN 1 ELSE 0 END CTZ_REFUGEE,
+                CASE WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS NOT IN ('1', '2', '5') THEN 1 ELSE 0 END CTZ_US_OTHER_STATUS,
+                CASE WHEN COUNTRY = 'USA' AND CITIZENSHIP_STATUS IN ('1', '2', '5', '9') THEN 1 ELSE 0 END CTZ_DOMESTIC
+        FROM    PS_CITIZENSHIP 
+        )
+GROUP 
+BY      EMPLID
+    ),
+
+CTE_SEX AS (
+    SELECT  EMPLID, 
+            SEX 
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY EMPLID ORDER BY EFFDT DESC) PERS_INDEX,
+                    EMPLID, 
+                    SEX
+            FROM    PS_PERS_DATA_EFFDT
+                    )
+    WHERE   PERS_INDEX = 1
+    ),
+    
+--- Puts together all the Race/Eth, citizenship stuff and implements the IPEDS trumping rule.
+--- Note that while the race/eth CTE appears to pull r/e indicators for ALL folks,
+--- we use the join criteria in THIS CTE to only get the indicators for folks who are domestic.
+CTE_DEMOGRAPHICS (EMPLID, CTZ_COUNTRY_OF_CITIZENSHIP, RE_HISPANIC, RE_TWO_OR_MORE, RE_WHITE, RE_BLACK, RE_ASIAN, RE_AIAN, RE_NHPI, RE_MISSING, RE_IPEDS_RACE_ETH, CTZ_VISA_TYPE) AS (
+    SELECT  CTZ.EMPLID, 
+            CTZ.CTZ_COUNTRY_OF_CITIZENSHIP, 
+            COALESCE(RET.RE_HISPANIC,0) RE_HISPANIC, 
+            COALESCE(RET.RE_TWO_OR_MORE,0) RE_TWO_OR_MORE, 
+            COALESCE(RET.RE_WHITE,0) RE_WHITE, 
+            COALESCE(RET.RE_BLACK,0) RE_BLACK, 
+            COALESCE(RET.RE_ASIAN,0) RE_ASIAN, 
+            COALESCE(RET.RE_AIAN,0) RE_AIAN, 
+            COALESCE(RET.RE_NHPI,0) RE_NHPI, 
+            COALESCE(RET.RE_MISSING,0) RE_MISSING,
+            CASE    WHEN CTZ.CTZ_DOMESTIC = 0 THEN 1
+                    WHEN RET.EMPLID IS NULL THEN 0
+                    WHEN RET.RE_HISPANIC = 1 THEN 3
+                    WHEN RET.RE_TWO_OR_MORE = 1 THEN 9
+                    WHEN RET.RE_WHITE = 1 THEN 8
+                    WHEN RET.RE_BLACK = 1 THEN 6
+                    WHEN RET.RE_ASIAN = 1 THEN 5
+                    WHEN RET.RE_AIAN = 1 THEN 4
+                    WHEN RET.RE_NHPI = 1 THEN 7
+                    WHEN RET.RE_MISSING = 1 THEN 6
+                    ELSE NULL 
+                    END  RE_IPEDS_RACE_ETH,
+            CASE    WHEN CTZ.CTZ_PERMANENT_RESIDENT = 1 THEN 'F'
+                    WHEN CTZ.CTZ_COUNTRY_OF_CITIZENSHIP = 'USA' THEN 'G'
+                    WHEN CTZ.CTZ_OTHER_US_STATUS = 1 AND VISA_PERMIT_TYPE IS NULL THEN 'N'
+                    WHEN CTZ.CTZ_REFUGEE = 1 THEN 'E'
+                    WHEN VIZ.VISA_PERMIT_TYPE = 'F-1' THEN 'A'
+                    WHEN VIZ.VISA_PERMIT_TYPE = 'F-2' THEN 'B'
+                    WHEN VIZ.VISA_PERMIT_TYPE = 'J-1' THEN 'C'
+                    WHEN VIZ.VISA_PERMIT_TYPE = 'J-2' THEN 'D'
+                    ELSE 'G'
+                    END  CTZ_VISA_TYPE
+    FROM    CTE_CITIZENSHIP CTZ
+    LEFT
+    JOIN    PS_VISA_PMT_DATA VIZ 
+    ON      VIZ.EMPLID = CTZ.EMPLID
+    LEFT
+    JOIN    CTE_RACE_ETH RET
+    ON      RET.EMPLID = CTZ.EMPLID
+    AND     CTZ.CTZ_DOMESTIC = 1
+    
+     ),
+
+--- A little fancy indexing footwork to, inside the subquery, combined with the WHERE clause get up to 2 rows/emplid:
+---  > a per person latest institution
+---  > a per person's external career (e.g. HS and/or UGRAD) latest institution
+--- PER_CAREER_INDEX of 1 will give latest in each career available.
+--- Then we can get a conditional max on them to extract the relevant values.
+--- PER_EMPLID_INDEX of 1 will give latest institution regardless of what it is;
+--- Otherwise we can filter for the career to get that specific value
+CTE_PREVIOUS_INSTITUTIONS (EMPLID, PREV_INST_CEEB, PREV_HS_CEEB, PREV_HS_BPS, PREV_INST_DOMESTIC, PREV_INST_LEVEL, PREV_INST_PROPRIETORSHIP, EVAL_HS_GPA, EVAL_UG_GPA) AS (
+SELECT  EMPLID,
+        MAX(CASE WHEN PER_EMPLID_INDEX = 1  THEN CEEB ELSE NULL END) PREV_INST_CEEB,
+        MAX(CASE WHEN EXT_CAREER = 'HS'     THEN CEEB ELSE NULL END) PREV_HS_CEEB,
+        MAX(CASE WHEN EXT_CAREER = 'HS' THEN BPS_INDICATOR ELSE NULL END) PREV_HS_BPS,
+        MAX(CASE WHEN PER_EMPLID_INDEX = 1  THEN DOMESTIC ELSE NULL END) PREV_INST_DOMESTIC,
+        MAX(CASE WHEN PER_EMPLID_INDEX = 1  THEN SCH_LEVEL ELSE NULL END) PREV_INST_LEVEL,
+        MAX(CASE WHEN PER_EMPLID_INDEX = 1  THEN PROPRIETORSHIP ELSE NULL END) PREV_INST_PROPRIETORSHIP,      
+        MAX(CASE WHEN EXT_CAREER = 'HS'     AND EXT_SUMM_TYPE = 'AGP' THEN CONVERT_GPA ELSE NULL END) EVAL_HS_GPA,
+        MAX(CASE WHEN EXT_CAREER = 'UGRD'   AND GPA_TYPE = '4PT' THEN CONVERT_GPA ELSE NULL END) EVAL_UG_GPA
+FROM    (
+    SELECT  ROW_NUMBER() OVER (PARTITION BY EAD.EMPLID, EAD.EXT_CAREER ORDER BY EAD.FROM_DT DESC, EAD.EXT_DATA_NBR DESC) PER_CAREER_INDEX,
+            ROW_NUMBER() OVER (PARTITION BY EAD.EMPLID ORDER BY EAD.FROM_DT DESC, EAD.EXT_DATA_NBR DESC) PER_EMPLID_INDEX,
+            EAD.EMPLID,
+            EAS.EXT_CAREER,
+            EAD.EXT_ORG_ID,
+            EAD.EXT_DATA_NBR,
+            EAD.FROM_DT,
+            CASE WHEN LOC.COUNTRY = 'USA' THEN 1 ELSE 0 END DOMESTIC,
+            OTA.ATP_CD CEEB,
+            EOT.DESCR SCH_NAME,
+            OTA.LS_SCHOOL_TYPE SCH_LEVEL,
+            EOT.PROPRIETORSHIP,
+            CASE WHEN GRP.ORG_GRP_CD = 'BPS' THEN 1 ELSE 0 END BPS_INDICATOR,
+            EAS.EXT_SUMM_TYPE,
+            EAS.GPA_TYPE,
+            EAS.CONVERT_GPA,
+            EAS.CLASS_RANK,
+            EAS.CLASS_SIZE,
+            EAS.PERCENTILE,
+            EAD.LS_DATA_SOURCE
+    FROM    PS_EXT_ACAD_DATA EAD 
+    LEFT
+    JOIN    PS_EXT_ACAD_SUM EAS
+    ON      EAS.EMPLID = EAD.EMPLID
+    AND     EAS.EXT_ORG_ID = EAD.EXT_ORG_ID
+    AND     EAS.EXT_CAREER =  EAD.EXT_CAREER
+    AND     EAS.EXT_DATA_NBR = EAD.EXT_DATA_NBR
+    AND     EAS.EXT_SUMM_TYPE IN ('AGP', 'HSOV', 'UGOV') 
+    LEFT
+    JOIN    PS_EXT_ORG_TBL EOT
+    ON      EOT.EXT_ORG_ID = EAD.EXT_ORG_ID
+    LEFT
+    JOIN    PS_EXT_ORG_TBL_ADM OTA
+    ON      OTA.EXT_ORG_ID = EOT.EXT_ORG_ID
+    LEFT    
+    JOIN    PS_ORG_LOCATION LOC
+    ON      LOC.EXT_ORG_ID = EOT.EXT_ORG_ID
+    LEFT
+    JOIN    PS_ORG_GROUPING GRP
+    ON      GRP.EXT_ORG_ID = EOT.EXT_ORG_ID
+    AND     GRP.ORG_GRP_CD = 'BPS'
+  /*  LEFT 
+    JOIN    PS_LS_SCHL_TYP_TBL LST 
+    ON      LST.LS_SCHOOL_TYPE = OTA.LS_SCHOOL_TYPE
+    LEFT 
+    JOIN    PSXLATITEM XLP 
+    ON      XLP.FIELDNAME = 'PROPRIETORSHIP' 
+    AND     XLP.FIELDVALUE = EOT.PROPRIETORSHIP*/
+    
+    WHERE   EAD.EXT_CAREER IN ('HS'  , 'UGRD')
+    AND     EAD.LS_DATA_SOURCE <> 'SLF'
+            ) 
+        
+WHERE   PER_CAREER_INDEX = 1
+GROUP   
+BY      EMPLID
+
+
+/*      Other lookups */
+),
+
+--- Pivot might be overengineering what could have been a max-case combo, to be honest.
+CTE_RATINGS(EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, EVAL_QUALITATIVE, EVAL_RIGOR) AS (
+    SELECT  EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, EVAL_QUALITATIVE, EVAL_RIGOR
+    FROM    (
+        SELECT  EMPLID,
+                ACAD_CAREER,
+                STDNT_CAR_NBR,
+                ADM_APPL_NBR,
+                RATING_CMP,
+                RATING_CMP_VALUE
+        FROM    PS_ADM_APPL_CMP
+        WHERE   RATING_CMP IN ('1QRT', '1RIG')
+            )
+    PIVOT   (
+            MAX(RATING_CMP_VALUE)
+            FOR RATING_CMP IN 
+            (
+            '1QRT' EVAL_QUALITATIVE,
+            '1RIG' EVAL_RIGOR
+            )
+            )
+    ),
+    
+--- Nothing fancy here.
+CTE_COMMITTEE(EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, EVAL_COMMITTEE) AS (
+    SELECT  EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, EVAL_COMMITTEE
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR ORDER BY EVALUATION_DT DESC) EVAL_INDEX, 
+                    EMPLID, ACAD_CAREER, STDNT_CAR_NBR, ADM_APPL_NBR, SUBSTR(COMMITTEE_ID,-2,2) EVAL_COMMITTEE
+            FROM    PS_ADM_EVAL_COM
+            )
+    WHERE   EVAL_INDEX = 1
+    )
+,
+-- Forgot addresses were effective-dated.
+CTE_HOME_ADDRESS(EMPLID, HOME_COUNTRY, HOME_CITY, HOME_STATE, HOME_ZIP) AS (
+    SELECT  EMPLID, COUNTRY, CITY, 
+            CASE WHEN COUNTRY = 'USA' THEN STATE ELSE NULL END STATE, 
+            CASE WHEN COUNTRY = 'USA' THEN SUBSTR(POSTAL,0,5) ELSE NULL END ZIP
+    FROM    (
+            SELECT  ROW_NUMBER() OVER (PARTITION BY EMPLID ORDER BY EFFDT DESC) ADDRESS_INDEX, 
+                    EMPLID, COUNTRY, CITY, STATE, POSTAL
+            FROM    PS_ADDRESSES
+            WHERE   ADDRESS_TYPE = 'HOME'
+            ) 
+    WHERE   ADDRESS_INDEX = 1
+    )
+
+
+--select home_country, home_state, count(*) from CTE_HOME_ADDRESS group by home_country, home_state;
+--SELECT * FROM CTE_STUDENT_RECORDS_DEDUPLICATED  ORDER BY EMPLID, ADM_APPL_NBR, EFFDT, EFFSEQ;
+--SELECT * FROM CTE_STUDENT_RECORDS where emplid = 'U00039116' ORDER BY EMPLID, ADM_APPL_NBR;
+--select * from CTE_APPLICATION_RECORDS where emplid = 'U00039116';
+--select * from ps_adm_appl_prog where emplid = 'U00039116';
+    
+/*******************************************************************************/
+/*  Some notes: 
+    - Tried prefixing some of the elements with "area" abbreviations. 
+    TS = test score, RE = race/ethnicity, EVAL = evaluation, SCH = scholarship
+    is this worth doing? get rid of it? extend it to other areas? 
+    I thought it would be useful for sorting elements in various things   
+*/
+
+SELECT  APL.EMPLID,
+        APL.ADMIT_TERM,
+        APL.DECISION_STATUS,
+        APL.DECISION_STATUS_DATE,
+        APL.RESPONSE_STATUS,
+        APL.RESPONSE_STATUS_DATE,
+        APL.COLLEGE_APPLIED,
+        APL.PLAN_APPLIED,
+        APL.SUBPLAN_APPLIED,
+        APL.DEGREE_APPLIED,
+        APL.COLLEGE_LATEST,
+        APL.PLAN_LATEST,
+        APL.SUBPLAN_LATEST,
+        APL.DEGREE_LATEST, --When undeclared, how should we have the field?
+        TO_CHAR(AAD.ADM_APPL_DT, 'YYYYMMDD') APPLICATION_DATE,
+        APL.DEPOSIT_DATE,
+        APL.EVER_WAITLISTED,
+        APL.LATEST_CONDITIONAL_STATUS,
+        APL.KHC_ADMIT,
+        APL.KHC_RESPONSE,
+        SUBSTR(AAD.ADMIT_TYPE,1,1) APPLICATION_CLASS,
+        AAD.ADM_APPL_METHOD APPLICATION_SOURCE,
+        CASE AAD.HOUSING_INTEREST
+            WHEN 'C' THEN 'C'
+            WHEN 'H' THEN 'D'
+            ELSE '?' END PLANNED_HOUSING,
+        AAD.NOTIFICATION_PLAN,
+        CASE AAD.NOTIFICATION_PLAN 
+            WHEN 'ED1' THEN 'ED'
+            WHEN 'E1R' THEN 'ED'
+            WHEN 'ED2' THEN 'E2'
+            WHEN 'GTF' THEN 'GT'
+            WHEN 'E2R' THEN 'E2'
+            WHEN 'REG' THEN 'RD'
+            END APPLICATION_TYPE,
+        CAF.KHC_INTEREST, 
+        CAF.CGS_INTEREST, 
+        CAF.LANDSCAPE_HS, 
+        CAF.LANDSCAPE_NEIGHBORHOOD,
+        CAF.FIRST_GEN,
+        CASE WHEN EOI.EMPLID IS NOT NULL THEN 1 ELSE 0 END EXEC_OFFICE_INTEREST,
+        CASE WHEN ATH.EMPLID IS NOT NULL THEN 1 ELSE 0 END ATHLETIC_REFERRAL,
+        CASE WHEN RCR.EMPLID IS NOT NULL THEN 1 ELSE 0 END FACSTAFF_DEPENDENT,
+        AUD.EVAL_INSTRUMENT,
+        AUD.EVAL_PERFORMANCE_SCORE,
+        RAT.EVAL_QUALITATIVE,
+        RAT.EVAL_RIGOR,
+        CMT.EVAL_COMMITTEE,
+        PIN.EVAL_HS_GPA,
+        PIN.EVAL_UG_GPA,
+        SCH.SCH_MENINO_STATUS,
+        SCH.SCH_HISPNC_STATUS,
+        SCH.SCH_NTMER_STATUS,
+        SCH.SCH_NRAABS_STATUS,
+        SCH.SCH_NRIS_STATUS,
+        SCH.SCH_PRES_STATUS,
+        SCH.SCH_TRUST_STATUS,
+        CAF.TEST_SCORE_CONSIDERATION,
+        TST.TS_ACT_ENGLISH, 
+        TST.TS_ACT_MATH, 
+        TST.TS_ACT_READING, 
+        TST.TS_ACT_SCIENCE,
+        TST.TS_SAT_MATH, 
+        TST.TS_SAT_VERBAL,
+        TST.TS_DUO_COMP, 
+        TST.TS_DUO_CONV, 
+        TST.TS_DUO_LIT, 
+        TST.TS_DUO_PROD, 
+        TST.TS_DUO_OVERALL,
+        TST.TS_TOEFL, 
+        TST.TS_IELTS,
+        RLN.ALUM_GRANDPARENT,
+        RLN.ALUM_OTHER,
+        RLN.ALUM_PARENT,
+        RLN.ALUM_SIBLING,
+        PER.BIRTHDATE,
+        ADR.HOME_CITY,
+        ADR.HOME_STATE,
+        ADR.HOME_COUNTRY,
+        ADR.HOME_ZIP, 
+        DEM.CTZ_COUNTRY_OF_CITIZENSHIP, 
+        DEM.RE_HISPANIC, 
+        DEM.RE_TWO_OR_MORE, 
+        DEM.RE_WHITE, 
+        DEM.RE_BLACK, 
+        DEM.RE_ASIAN, 
+        DEM.RE_AIAN, 
+        DEM.RE_NHPI, 
+        DEM.RE_MISSING, 
+        DEM.RE_IPEDS_RACE_ETH, 
+        DEM.CTZ_VISA_TYPE,
+        SEX.SEX,
+        PIN.PREV_INST_CEEB, 
+        PIN.PREV_HS_CEEB, 
+        PIN.PREV_HS_BPS,
+        PIN.PREV_INST_DOMESTIC, 
+        PIN.PREV_INST_LEVEL, 
+        PIN.PREV_INST_PROPRIETORSHIP, 
+        AAD.APPL_FEE_STATUS
+FROM    CTE_STUDENT_RECORDS APL
+LEFT
+JOIN    PS_ADM_APPL_DATA AAD
+ON      AAD.EMPLID = APL.EMPLID
+AND     AAD.ACAD_CAREER = APL.ACAD_CAREER
+AND     AAD.STDNT_CAR_NBR = APL.STDNT_CAR_NBR
+AND     AAD.ADM_APPL_NBR = APL.ADM_APPL_NBR
+LEFT
+JOIN    PS_ADM_APPL_RCR_CA RCR
+ON      RCR.EMPLID = APL.EMPLID
+AND     RCR.ACAD_CAREER = APL.ACAD_CAREER
+AND     RCR.ADM_APPL_NBR = APL.ADM_APPL_NBR
+AND     RCR.STDNT_CAR_NBR = APL.STDNT_CAR_NBR
+AND     RCR.RECRUITMENT_CAT='FSCH'
+
+----    Executive office interest
+LEFT
+JOIN    PS_STDNT_GRPS EOI
+ON      EOI.EMPLID = APL.EMPLID
+AND     EOI.INSTITUTION = APL.INSTITUTION
+AND     EOI.STDNT_GROUP = 'ADEO'
+
+----    Athlete
+LEFT
+JOIN    PS_STDNT_GRPS ATH
+ON      ATH.EMPLID = APL.EMPLID
+AND     ATH.INSTITUTION = APL.INSTITUTION
+AND     ATH.STDNT_GROUP = 'ADAI'
+LEFT
+JOIN    CTE_CAF_FIELDS CAF
+ON      CAF.EMPLID = APL.EMPLID
+AND     CAF.ACAD_CAREER = APL.ACAD_CAREER
+AND     CAF.ADM_APPL_NBR = APL.ADM_APPL_NBR
+AND     CAF.STDNT_CAR_NBR = APL.STDNT_CAR_NBR
+LEFT
+JOIN    CTE_SCHOLARSHIPS SCH
+ON      SCH.EMPLID = APL.EMPLID
+AND     SCH.ACAD_CAREER = APL.ACAD_CAREER
+AND     SCH.ADMIT_TERM = APL.ADMIT_TERM
+LEFT
+JOIN    CTE_TEST_SCORES TST
+ON      TST.EMPLID = APL.EMPLID
+LEFT
+JOIN    CTE_AUDITION AUD
+ON      AUD.EMPLID = APL.EMPLID
+LEFT
+JOIN    CTE_RELATIONSHIPS RLN
+ON      RLN.EMPLID = APL.EMPLID
+LEFT 
+JOIN    CTE_HOME_ADDRESS ADR
+ON      ADR.EMPLID = APL.EMPLID
+LEFT
+JOIN    PS_PERSON PER
+ON      PER.EMPLID = APL.EMPLID
+LEFT
+JOIN    CTE_DEMOGRAPHICS DEM
+ON      DEM.EMPLID = APL.EMPLID
+LEFT
+JOIN    CTE_SEX SEX
+ON      SEX.EMPLID = APL.EMPLID
+LEFT
+JOIN    CTE_RATINGS RAT
+ON      RAT.EMPLID = APL.EMPLID
+AND     RAT.ACAD_CAREER = APL.ACAD_CAREER
+AND     RAT.STDNT_CAR_NBR = APL.STDNT_CAR_NBR
+AND     RAT.ADM_APPL_NBR = APL.ADM_APPL_NBR
+LEFT
+JOIN    CTE_COMMITTEE CMT
+ON      CMT.EMPLID = APL.EMPLID
+AND     CMT.ACAD_CAREER = APL.ACAD_CAREER
+AND     CMT.STDNT_CAR_NBR = APL.STDNT_CAR_NBR
+AND     CMT.ADM_APPL_NBR = APL.ADM_APPL_NBR
+LEFT
+JOIN    CTE_PREVIOUS_INSTITUTIONS PIN
+ON      PIN.EMPLID = APL.EMPLID 
+--WHERE APL.EMPLID = 'U00039116'
+--WHERE LANDSCAPE_HS IS NOT NULL AND LANDSCAPE_HS <> ' '
+ORDER 
+BY      APL.EMPLID;
+ 
